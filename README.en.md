@@ -2,17 +2,43 @@
 
 [中文](./README.md) ｜ English
 
-![readme.png](https://github.com/user-attachments/assets/e1c4e604-568d-4778-8780-29473619744f)
+A multi-model AI chat platform on Cloudflare Workers AI and AI Gateway, deployable to Vercel, Cloudflare Workers, and Docker.
+
+Example: [ai.vuiki.com](https://ai.vuiki.com) (quota may run out; deploying your own is recommended)
+
+![readme](./.github/assets/readme.jpg)
+
+## Features
+
+- Workers AI models out of the box; External Models through AI Gateway (BYOK / Unified Billing / Gateway Routes)
+- Personal Providers: visitors add models with their own key or AI Gateway
+- Image generation in conversations, with params and up to 4 reference images
+- Document parsing, webpage extraction, and AI Search Knowledge Base (RAG)
+- Voice input and read-aloud, Custom Instructions, model groups and ordering
+- Data stays in the browser, with export and import
+- Works offline as a PWA; optional access password
 
 ## Deployment
 
+> [!WARNING]
+> Without `APP_PASSWORD`, anyone can use your inference APIs.
+
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FJazee6%2Fcloudflare-ai-web&demo-title=Cloudflare%20AI%20Web&demo-url=https%3A%2F%2Fai.jaze.top)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FJazee6%2Fcloudflare-ai-web&demo-title=Cloudflare%20AI%20Web&demo-url=https%3A%2F%2Fai.vuiki.com)
 
-Example: https://ai.jaze.top
+Upgrading from 5.x: set Framework Preset to **Other** under **Settings → Build and Deployment** and clear custom build settings.
 
-> It may not respond when the quota is used up, it is recommended to deploy it yourself
+### Cloudflare Workers
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Jazee6/cloudflare-ai-web)
+
+Or deploy locally:
+
+```bash
+bun install
+bun run deploy
+```
 
 ### Docker
 
@@ -25,43 +51,58 @@ docker run -d --name cloudflare-ai-web \
   jazee6/cloudflare-ai-web
 ```
 
-## Features
+## Environment Variables
 
-- Quickly build a multimodel AI platform using Cloudflare Workers AI
-- Support Cloudflare AI Gateway to access models such as Gemini
-- Support fast deployment with Serverless
-- Chat history is stored locally
-- Image attachments are resized in the browser (long edge up to 1568px, at most 512 KiB each, up to 5 per request) so requests fit the Vercel Functions body limit
-- Access Session protection via deployment password
+All optional. With none set, visitors can still use Personal Providers.
 
-> **Note:** In public mode anyone can use your inference APIs. Set `APP_PASSWORD` to enable Access Session.
+| Name                         | Description                                                     |
+| ---------------------------- | --------------------------------------------------------------- |
+| `CF_ACCOUNT_ID`              | Cloudflare Account ID                                           |
+| `CF_WORKERS_AI_TOKEN`        | Workers AI token                                                |
+| `CF_AI_GATEWAY_NAME`         | AI Gateway name                                                 |
+| `CF_AI_GATEWAY_TOKEN`        | AI Gateway token                                                |
+| `CF_AI_GATEWAY_MODELS`       | External Model declarations, see below                          |
+| `CF_AI_SEARCH_TOKEN`         | AI Search token; enables the Knowledge Base                     |
+| `CF_AI_SEARCH_INSTANCES`     | Allowed AI Search instances, comma-separated, `id` or `id:Name` |
+| `CF_AI_SEARCH_NAMESPACE`     | AI Search namespace, default `default`                          |
+| `CF_AI_SEARCH_REWRITE_QUERY` | Enable `rewrite_query`, default `false`                         |
+| `CF_BROWSER_RUN_TOKEN`       | Browser Run token for dynamic webpages                          |
+| `APP_PASSWORD`               | Access password                                                 |
+| `APP_ANNOUNCEMENT`           | Announcement, see below                                         |
+| `SITE_URL`                   | Public site URL, read at build time, see below                  |
 
-## Deployment Instructions
+### CF_WORKERS_AI_TOKEN
 
-### Environment Variables
+Dashboard → **Manage Account → Account API Tokens → Create Token**, using the **Workers AI** template.
 
-| Name                    | Description                      | Required     |
-| ----------------------- | -------------------------------- | ------------ |
-| CF_ACCOUNT_ID           | Cloudflare Account ID            | ✅           |
-| CF_WORKERS_AI_TOKEN     | Cloudflare Workers AI Token      | ✅           |
-| CF_AI_GATEWAY_NAME      | Cloudflare AI Gateway Name       |              |
-| CF_AI_GATEWAY_TOKEN     | Cloudflare AI Gateway Auth Token | With gateway |
-| GOOGLE_API_KEY          | Google AI Studio Token           | With Google  |
-| CF_AI_GATEWAY_PROVIDERS | Cloudflare AI Gateway Providers  |              |
-| APP_PASSWORD            | Access Password (Access Session) |              |
+### CF_AI_GATEWAY_MODELS
 
-#### CF_WORKERS_AI_TOKEN
+Configure keys in Dashboard → **AI → AI Gateway → Provider Keys (BYOK)**, then declare models separated by commas:
 
-- Manage Account - Account API Tokens - Create Token - Create with Workers AI template
+```bash
+CF_AI_GATEWAY_MODELS="google-ai-studio/gemini-4-hydrogen?name=Gemini+4+Hydrogen&input=image,search&contextWindow=1048576,openai/gpt-5?input=image&reasoning=true&contextWindow=400000,dynamic/smart-chat?name=Smart+Chat"
+```
 
-#### CF_AI_GATEWAY_PROVIDERS
+Parameters: `name`, `input` (`image` / `search`), `reasoning`, `contextWindow`, `byokAlias`.
 
-Supported providers:
+### APP_ANNOUNCEMENT
 
-- google
+A top-right announcement that returns after closing only when its content changes:
 
-Multiple providers are separated by commas
+```bash
+APP_ANNOUNCEMENT='{"title":"New feature","description":{"en":"...","zh-CN":"..."},"url":"https://..."}'
+```
 
-## Sponsor
+### SITE_URL
 
-[Click Me](https://jaze.top/sponsor)
+E.g. `https://ai.example.com`, used for canonical, share cards and sitemap. It is baked in at build time, so changes need a rebuild:
+
+- Vercel / Workers Builds: set it as a build variable
+- Docker: `docker build --build-arg SITE_URL=https://ai.example.com .`
+
+### Personal Providers
+
+Visitors add them under **Settings → Providers**. Credentials stay in the browser; the server never stores or logs them.
+
+- **Through this deployment's gateway**: requires the gateway variables; visitors must bring their own key and cannot use `dynamic/*`, so your credits are never used
+- **Through the visitor's own gateway**: key optional, `dynamic/*` allowed

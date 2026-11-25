@@ -13,9 +13,12 @@
 # testing
 /coverage
 
-# next.js
-/.next/
-/out/
+# build output
+/dist/
+/.output/
+/.nitro/
+/.tanstack/
+/.wrangler/
 
 # production
 /build
@@ -38,7 +41,11 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
 
 .idea
 .env*.local
+
+# docs
+/docs/*
+!/docs/adr/
+!/docs/agents/

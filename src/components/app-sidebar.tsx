@@ -1,0 +1,210 @@
+import { useLiveQuery } from "dexie-react-hooks";
+import { MoreHorizontal, Plus, SettingsIcon } from "lucide-react";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
+import LoadingIndicator from "@/components/loading-indicator";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
+import { deleteConversation, listRecentSessions } from "@/lib/conversation-store";
+import type { Session } from "@/lib/db";
+import { useI18n } from "@/hooks/use-i18n";
+
+/** Fixed widths so the server and client render the same skeleton. */
+const SKELETON_WIDTHS = ["72%", "56%", "84%", "64%", "48%", "76%"];
+
+interface GroupedSessions {
+  type: "today" | "last7Days" | "last30Days" | "earlier";
+  sessions: Session[];
+}
+
+const AppSidebar = () => {
+  const sessionId = useParams({ strict: false, select: (params) => params.sessionId });
+  const navigate = useNavigate();
+  const { t } = useI18n();
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+  const sessions = useLiveQuery(listRecentSessions);
+
+  const groupedSessions = useMemo(
+    () =>
+      sessions?.reduce((groups, session) => {
+        const now = new Date();
+        const updatedAt = new Date(session.updatedAt);
+        const diffTime = now.getTime() - updatedAt.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+        let groupType: GroupedSessions["type"];
+        if (diffDays === 0) {
+          groupType = "today";
+        } else if (diffDays <= 7) {
+          groupType = "last7Days";
+        } else if (diffDays <= 30) {
+          groupType = "last30Days";
+        } else {
+          groupType = "earlier";
+        }
+
+        const group = groups.find((g) => g.type === groupType);
+        if (group) {
+          group.sessions.push(session);
+        } else {
+          groups.push({ type: groupType, sessions: [session] });
+        }
+        return groups;
+      }, [] as GroupedSessions[]) ?? [],
+    [sessions],
+  );
+
+  const handleDelete = async () => {
+    if (!deleteTarget || deleting) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await deleteConversation(deleteTarget);
+      setDeleteConfirmOpen(false);
+      void navigate({ to: "/" });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <Sidebar>
+        <SidebarContent className="scroll-fade-y scrollbar-auto scrollbar-thumb-border scrollbar-track-transparent">
+          {sessions === undefined && (
+            <SidebarGroup aria-hidden>
+              <div className="flex h-8 items-center px-2">
+                <Skeleton className="h-3 w-12" />
+              </div>
+              <SidebarMenu>
+                {SKELETON_WIDTHS.map((width) => (
+                  <SidebarMenuItem key={width} className="flex h-8 items-center px-2">
+                    <Skeleton className="h-4" style={{ width }} />
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
+          {groupedSessions.map(({ type, sessions }) => (
+            <SidebarGroup key={type}>
+              <SidebarGroupLabel>{t(`sidebar.${type}`)}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {sessions.map(({ id, name }) => (
+                    <SidebarMenuItem key={id}>
+                      <SidebarMenuButton
+                        render={<Link to="/c/$sessionId" params={{ sessionId: id }} />}
+                        isActive={sessionId === id}
+                      >
+                        {name}
+                        <LoadingIndicator pathname={`/c/${id}`} className="ml-auto" />
+                      </SidebarMenuButton>
+
+                      {sessionId === id && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger render={<SidebarMenuAction />}>
+                            <MoreHorizontal />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent side="right" align="start">
+                            <DropdownMenuItem
+                              onClick={() => {
+                                setDeleteConfirmOpen(true);
+                                setDeleteTarget(id);
+                              }}
+                            >
+                              <span className="text-destructive">{t("common.delete")}</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </SidebarContent>
+        <SidebarFooter>
+          <SidebarMenu>
+            <SidebarMenuItem className="flex items-center gap-1">
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label={t("sidebar.settings")}
+                render={<Link to="/settings" />}
+                nativeButton={false}
+              >
+                <SettingsIcon />
+              </Button>
+
+              <Link to="/" className="ml-auto">
+                <Button variant="ghost">
+                  {t("sidebar.newChat")}
+                  <Plus />
+                </Button>
+              </Link>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+      </Sidebar>
+
+      <AlertDialog
+        open={deleteConfirmOpen}
+        onOpenChange={(open) => {
+          if (!deleting) {
+            setDeleteConfirmOpen(open);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("sidebar.deleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("sidebar.deleteDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction disabled={deleting} onClick={() => void handleDelete()}>
+              {deleting && <Spinner />}
+              {t("common.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+};
+
+export default AppSidebar;

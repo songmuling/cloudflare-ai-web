@@ -1,0 +1,343 @@
+import { isReasoningUIPart, isToolUIPart, type UIMessage } from "ai";
+import {
+  BookOpenIcon,
+  BrainIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  ImagePlusIcon,
+  RefreshCcwIcon,
+  SquareIcon,
+  Volume2Icon,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import BlobImage from "@/components/blob-image";
+import Markdown from "@/components/markdown";
+import ActionButton from "@/components/message-action";
+import ToolCall from "@/components/tool-call";
+import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
+import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
+import { useSpeechSynthesis } from "@/hooks/use-speech-synthesis";
+import type { StoredImagesData } from "@/lib/db";
+import { getImageEntryMetadata } from "@/lib/image-models";
+import { getImageBlobs } from "@/lib/image-turn";
+import { getResponseMetadata } from "@/lib/response-metadata";
+import { useI18n } from "@/hooks/use-i18n";
+
+/** Starts as a plain line and opens while the model thinks; the reader's own toggle wins. */
+const Reasoning = ({
+  text,
+  running,
+  seconds,
+}: {
+  text: string;
+  running: boolean;
+  seconds?: number | null;
+}) => {
+  const { t } = useI18n();
+  const [open, setOpen] = useState<boolean>();
+  const line = (
+    <TraceLine status={running ? "running" : undefined}>
+      <TraceIcon>{running ? <Spinner /> : <BrainIcon />}</TraceIcon>
+      <TraceTitle>{running ? t("reasoning.thinking") : t("reasoning.thought")}</TraceTitle>
+      {!running && typeof seconds === "number" && (
+        <TraceDescription>{t("reasoning.duration", { seconds })}</TraceDescription>
+      )}
+    </TraceLine>
+  );
+
+  if (text.length === 0) {
+    return line;
+  }
+
+  return (
+    <TraceCollapsible open={open ?? running} onOpenChange={setOpen}>
+      <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
+      <TraceCollapsibleContent>
+        <Markdown isAnimating={running}>{text}</Markdown>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
+  );
+};
+
+const CopyAction = ({ text }: { text: string }) => {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timeout = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timeout);
+  }, [copied]);
+
+  return (
+    <ActionButton
+      label={copied ? t("message.copied") : t("message.copy")}
+      onClick={() => {
+        navigator.clipboard
+          .writeText(text)
+          .then(() => setCopied(true))
+          .catch(() => {});
+      }}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </ActionButton>
+  );
+};
+
+type Part = UIMessage["parts"][number];
+
+/** Consecutive reasoning and tool parts share one Trace; everything else renders on its own. */
+const groupParts = (parts: UIMessage["parts"]) => {
+  const groups: { trace: boolean; parts: { part: Part; index: number }[] }[] = [];
+  parts.forEach((part, index) => {
+    const trace = isReasoningUIPart(part) || isToolUIPart(part);
+    const last = groups.at(-1);
+    if (trace && last?.trace) {
+      last.parts.push({ part, index });
+    } else {
+      groups.push({ trace, parts: [{ part, index }] });
+    }
+  });
+  return groups;
+};
+
+const AssistantChatItem = ({
+  message,
+  streaming,
+  onRetry,
+  onUseAsReference,
+}: {
+  message: UIMessage;
+  /** Only the live response streams; a stopped one keeps its parts' "streaming" state. */
+  streaming: boolean;
+  onRetry?: () => void;
+  onUseAsReference?: (image: Blob) => void;
+}) => {
+  const { t } = useI18n();
+  const metadata = getResponseMetadata(message);
+  const imageMeta = getImageEntryMetadata(message);
+  const {
+    supported: ttsSupported,
+    activeId: activeSpeechId,
+    speak,
+    stop: stopSpeech,
+  } = useSpeechSynthesis();
+  const isSpeaking = activeSpeechId === message.id;
+
+  const reasoningIndexes = new Map<Part, number>();
+  for (const part of message.parts.filter(isReasoningUIPart)) {
+    reasoningIndexes.set(part, reasoningIndexes.size);
+  }
+  const text = message.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+
+  const renderPart = (part: Part, index: number) => {
+    const key = `${part.type}-${index}`;
+
+    if (part.type === "text") {
+      return (
+        <Markdown key={key} isAnimating={streaming}>
+          {part.text}
+        </Markdown>
+      );
+    }
+
+    if (isReasoningUIPart(part)) {
+      return (
+        <Reasoning
+          key={key}
+          text={part.text}
+          running={streaming && part.state === "streaming"}
+          seconds={metadata?.reasoningSeconds?.[reasoningIndexes.get(part) ?? -1]}
+        />
+      );
+    }
+
+    if (isToolUIPart(part)) {
+      return <ToolCall key={key} part={part} streaming={streaming} />;
+    }
+
+    if (part.type === "data-images") {
+      return ((part.data as Partial<StoredImagesData>).images ?? []).map((image, imageIndex) => (
+        <BlobImage
+          key={`${key}-${imageIndex}`}
+          blob={image}
+          alt={`image-${imageIndex}`}
+          width={512}
+          height={512}
+          className="rounded-md transition-all hover:brightness-75"
+        />
+      ));
+    }
+
+    return null;
+  };
+
+  const gatewayCacheHit = metadata?.gateway?.cacheStatus === "HIT";
+  const gatewayDlpAction = metadata?.gateway?.dlpAction;
+  const citations = metadata?.citations ?? [];
+  const imageSeed = imageMeta?.params?.seed;
+  const modelName = imageMeta?.modelName ?? metadata?.modelName;
+  const referenceImages = onUseAsReference ? getImageBlobs(message, "data-images") : [];
+  const showFooter =
+    !streaming &&
+    Boolean(
+      text ||
+      onRetry ||
+      referenceImages.length > 0 ||
+      gatewayCacheHit ||
+      gatewayDlpAction ||
+      modelName ||
+      imageSeed !== undefined,
+    );
+
+  return (
+    <Message>
+      <MessageContent>
+        {groupParts(message.parts).map((group) =>
+          group.trace ? (
+            <Trace key={`trace-${group.parts[0].index}`}>
+              {group.parts.map(({ part, index }) => renderPart(part, index))}
+            </Trace>
+          ) : (
+            group.parts.map(({ part, index }) => renderPart(part, index))
+          ),
+        )}
+
+        {!streaming && citations.length > 0 && (
+          <Collapsible className="group/sources flex flex-col gap-2">
+            <CollapsibleTrigger
+              render={
+                <button
+                  type="button"
+                  className="inline-flex w-fit items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                />
+              }
+            >
+              <BookOpenIcon className="size-3.5" />
+              <span>{t("message.sources", { count: citations.length })}</span>
+              <ChevronRightIcon className="size-3.5 transition-transform group-data-[open]/sources:rotate-90" />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="flex flex-wrap gap-1.5">
+              {citations.map((citation) => (
+                <HoverCard key={citation.id}>
+                  <HoverCardTrigger
+                    render={
+                      <button type="button" className="inline-flex items-center">
+                        <Badge variant="secondary" className="max-w-64 gap-1.5">
+                          <span className="truncate">{citation.source}</span>
+                          {typeof citation.score === "number" && (
+                            <span className="text-muted-foreground tabular-nums">
+                              {Math.round(citation.score * 100)}%
+                            </span>
+                          )}
+                        </Badge>
+                      </button>
+                    }
+                  />
+                  <HoverCardContent className="w-80">
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-xs font-medium">{citation.source}</span>
+                        {typeof citation.score === "number" && (
+                          <Badge variant="outline" className="tabular-nums">
+                            {Math.round(citation.score * 100)}%
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">{citation.excerpt}</p>
+                    </div>
+                  </HoverCardContent>
+                </HoverCard>
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+
+        {showFooter && (
+          <MessageFooter className="px-0">
+            {text && <CopyAction text={text} />}
+            {text && ttsSupported && (
+              <ActionButton
+                label={isSpeaking ? t("message.stopReading") : t("message.readAloud")}
+                onClick={() => {
+                  if (isSpeaking) {
+                    stopSpeech();
+                  } else {
+                    speak(message.id, text);
+                  }
+                }}
+              >
+                {isSpeaking ? <SquareIcon /> : <Volume2Icon />}
+              </ActionButton>
+            )}
+            {onRetry && (
+              <ActionButton label={t("common.retry")} onClick={onRetry}>
+                <RefreshCcwIcon />
+              </ActionButton>
+            )}
+            {referenceImages.map((image, index) => (
+              <ActionButton
+                key={index}
+                label={
+                  referenceImages.length > 1
+                    ? t("message.useImageAsReference", { index: index + 1 })
+                    : t("message.useAsReference")
+                }
+                onClick={() => onUseAsReference?.(image)}
+              >
+                <ImagePlusIcon />
+              </ActionButton>
+            ))}
+            {(modelName || imageSeed !== undefined || gatewayCacheHit) && (
+              // Details about how the response was produced appear while hovering the message.
+              <div className="flex items-center gap-1 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100">
+                {modelName && <Badge variant="secondary">{modelName}</Badge>}
+                {imageSeed !== undefined && (
+                  <Badge variant="outline" className="tabular-nums">
+                    {t("message.seed", { seed: imageSeed })}
+                  </Badge>
+                )}
+                {gatewayCacheHit && (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<Badge variant="secondary">{t("message.cached")}</Badge>}
+                    />
+                    <TooltipContent>{t("message.cachedHint")}</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
+            )}
+            {gatewayDlpAction && (
+              <Tooltip>
+                <TooltipTrigger render={<Badge variant="outline">DLP: {gatewayDlpAction}</Badge>} />
+                <TooltipContent>{t("message.dlpHint")}</TooltipContent>
+              </Tooltip>
+            )}
+          </MessageFooter>
+        )}
+      </MessageContent>
+    </Message>
+  );
+};
+
+export default AssistantChatItem;
